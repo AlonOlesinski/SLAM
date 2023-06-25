@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 from bundle_adjustment import *
 import numpy as np
 import utils
+from typing import Iterable
 
 class PoseGraph:
     def __init__(self, relative_poses, covs):
@@ -19,12 +20,12 @@ class PoseGraph:
         prev_sym = gtsam.symbol('c', 0)
 
         # Create first camera's pose factor
-        sigmas = np.array([(0.0005 * np.pi / 180) ** 2,
-                                           (0.0001 * np.pi / 180) ** 2,
-                                           (0.0001 * np.pi / 180) ** 2,
-                                           5e-12,
-                                           1e-12,
-                                           2e-12])
+        sigmas = np.array([0.002,
+                                           0.002,
+                                           0.002,
+                                           0.01,
+                                           0.01,
+                                           0.01])
 
         pose_noise = gtsam.noiseModel.Diagonal.Sigmas(sigmas=sigmas)
         factor = gtsam.PriorFactorPose3(prev_sym, cur_global_pose, pose_noise)
@@ -77,11 +78,8 @@ class PoseGraph:
 
 
 def relative_poses_of_kfs(bundle, idx1, idx2):
-    try:
-        marginals = gtsam.Marginals(bundle.graph, bundle.transformed_values)
-    except RuntimeError:
-        print('marginals could not be computed')
-        return
+
+    marginals = gtsam.Marginals(bundle.graph, bundle.transformed_values)
     keys = gtsam.KeyVector()
     first_sym = gtsam.symbol('c', idx1)
     last_sym = gtsam.symbol('c', idx2)
@@ -112,7 +110,7 @@ def run_6_1():
     bundle_adjustment.run_local_adjustments()
     bundle_adjustment.set_global_coordinates()
     bundle = bundle_adjustment.bundles[0]
-    marginals = gtsam.Marginals(bundle.graph, bundle.values)
+    marginals = gtsam.Marginals(bundle.graph, bundle.transformed_values)
 
     gtsam.utils.plot.set_axes_equal(2)
     gtsam.utils.plot.plot_trajectory(0, bundle.transformed_values, marginals=marginals, scale=2.5)
@@ -127,12 +125,12 @@ def run_6_1():
 def run_6_2():
     db_path = 'akaze_ratio=0.5_blur=10_removed_close'
     track_db = TrackDB.deserialize(db_path)
-    first_location_prior_sigma = np.array([(0.03 * np.pi / 180) ** 2,
-                                           (0.01 * np.pi / 180) ** 2,
-                                           (0.01 * np.pi / 180) ** 2,
-                                           5e-8,
-                                           1e-8,
-                                           2e-8])
+    first_location_prior_sigma = np.array([0.02,
+                                           0.002,
+                                           0.002,
+                                           1,
+                                           0.01,
+                                           1])
     bundle_adjustment = BundleAdjustment(track_db, first_location_prior_sigma)
     bundle_adjustment.set_bundles()
     bundle_adjustment.run_local_adjustments()
@@ -156,9 +154,66 @@ def run_6_2():
 
     marginals = pose_graph.get_marginal_covariances()
     optimized_values = pose_graph.get_optimized_values()
-    gtsam.utils.plot.set_axes_equal(2)
-    gtsam.utils.plot.plot_trajectory(0, optimized_values, marginals=marginals ,scale=1000)
-    plt.savefig(utils.EX6_DOCS_PATH + '6_2_optimized_poses_with_cov.png')
+    gtsam.utils.plot.plot_trajectory(0, optimized_values, marginals=marginals, scale=10)
+    gtsam.utils.plot.set_axes_equal(0)
+    plt.show()
+    # plt.savefig(utils.EX6_DOCS_PATH + '6_2_optimized_poses_with_cov.png')
+
+def plot_trajectory(
+        fignum: int,
+        values: gtsam.Values,
+        scale: float = 1,
+        marginals: gtsam.Marginals = None,
+        title: str = "Plot Trajectory",
+        axis_labels: Iterable[str] = ("X axis", "Y axis", "Z axis"),
+) -> None:
+    """
+    Plot a complete 2D/3D trajectory using poses in `values`.
+
+    Args:
+        fignum: Integer representing the figure number to use for plotting.
+        values: Values containing some Pose2 and/or Pose3 values.
+        scale: Value to scale the poses by.
+        marginals: Marginalized probability values of the estimation.
+            Used to plot uncertainty bounds.
+        title: The title of the plot.
+        axis_labels (iterable[string]): List of axis labels to set.
+    """
+    fig = plt.figure(fignum)
+    axes = fig.gca(projection='3d')
+
+    axes.set_xlabel(axis_labels[0])
+    axes.set_ylabel(axis_labels[1])
+    axes.set_zlabel(axis_labels[2])
+    # axes.view_init(0, -90)
+
+    # Plot 2D poses, if any
+    poses = gtsam.utilities.allPose2s(values)
+    for key in poses.keys():
+        pose = poses.atPose2(key)
+        if marginals:
+            covariance = marginals.marginalCovariance(key)
+        else:
+            covariance = None
+
+        gtsam.utils.plot.plot_pose2_on_axes(axes,
+                           pose,
+                           covariance=covariance,
+                           axis_length=scale)
+
+    # Then 3D poses, if any
+    poses = gtsam.utilities.allPose3s(values)
+    for key in poses.keys():
+        pose = poses.atPose3(key)
+        if marginals:
+            covariance = marginals.marginalCovariance(key)
+        else:
+            covariance = None
+
+        gtsam.utils.plot.plot_pose3_on_axes(axes, pose, P=covariance, axis_length=scale)
+
+    fig.suptitle(title)
+    fig.canvas.set_window_title(title.lower())
 
 
 

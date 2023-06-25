@@ -10,8 +10,8 @@ from localization import *
 from gtsam.utils import plot
 import tqdm
 
-
 NEGATIVE_POINTS = 0
+
 
 def calculate_inverse_of_R_t(R_t):
     """
@@ -128,10 +128,16 @@ class LocalBundle:
         Add the points and the projection factors to the graph. We add a point only if it is present in
         the first frame and atleast 2 other frames.
         """
-        debug_flag = False # flag to debug only one track
+        debug_flag = False  # flag to debug only one track
+        sigma_value_x = 3e-2
+        sigma_value_y = 3e-2
+        print("x projection sigma: {}".format(sigma_value_x), " (should be between 2 and 4)")
+        projection_noise_model = gtsam.noiseModel.Diagonal.Sigmas([sigma_value_x, sigma_value_x,
+                                                                       sigma_value_y])
         for i, t in enumerate(self.tracks_gen()):
-            last_frame_id = min(t.first_frame_id + len(t)- 1,self.end_kf_idx)
-            gtsam_last_frame = gtsam.StereoCamera(self.values.atPose3(gtsam.symbol('c', last_frame_id)), self.k)
+            last_frame_id = min(t.first_frame_id + len(t) - 1, self.end_kf_idx)
+            gtsam_last_frame = gtsam.StereoCamera(
+                self.values.atPose3(gtsam.symbol('c', last_frame_id)), self.k)
             if last_frame_id - self.start_kf_idx <= 2:
                 continue
             # create the point by projecting the track from the last frame
@@ -151,13 +157,14 @@ class LocalBundle:
             self.values.insert(sym_point, gtsam_point_3d)
 
             # add the projection factor between the point and frame for all the relevant frames
-            for frame_id in range(self.start_kf_idx, last_frame_id+1):
+
+            for frame_id in range(self.start_kf_idx, last_frame_id + 1):
                 sym_frame = gtsam.symbol("c", frame_id)
                 xl, y = t.locations[frame_id - t.first_frame_id][0]
                 xr = t.locations[frame_id - t.first_frame_id][1][0]
                 gtsam_stereo_point = gtsam.StereoPoint2(xl, xr, y)
                 f = gtsam.GenericStereoFactor3D(gtsam_stereo_point,
-                                                gtsam.noiseModel.Isotropic.Sigma(3, 1.0),
+                                                projection_noise_model,
                                                 sym_frame,
                                                 sym_point,
                                                 self.k)
@@ -184,7 +191,8 @@ class LocalBundle:
         try:
             self.values = optimizer.optimize()
         except RuntimeError as e:
-            print(f"Optimization failed due to error in bundle: start_kf: {self.start_kf_idx}, end_kf: {self.end_kf_idx}")
+            print(
+                f"Optimization failed due to error in bundle: start_kf: {self.start_kf_idx}, end_kf: {self.end_kf_idx}")
             print(e)
         if self.debug:
             print(f'optimized individual factor error: {self.test_factor.error(self.values)}')
@@ -249,8 +257,6 @@ class LocalBundle:
         return self.graph.error(self.values)
 
 
-
-
 class BundleAdjustment:
 
     def __init__(self, track_db, location_prior_sigma):
@@ -295,7 +301,8 @@ class BundleAdjustment:
         """
         prev_bundle = None
         for bundle in self.bundles:
-            print(f"start kf: {bundle.start_kf_idx}, end kf:  {bundle.end_kf_idx}, number of landmarks: {bundle.get_track_num()}")
+            print(
+                f"start kf: {bundle.start_kf_idx}, end kf:  {bundle.end_kf_idx}, number of landmarks: {bundle.get_track_num()}")
             if prev_bundle is not None:
                 assert prev_bundle.end_kf_idx == bundle.start_kf_idx
             prev_bundle = bundle
@@ -325,7 +332,8 @@ class BundleAdjustment:
                 print(f'location of the first frame after optimization:'
                       f' {bundle.values.atPose3(gtsam.symbol("c", bundle.start_kf_idx)).translation()}')
                 first_factor = bundle.graph.at(0)
-                print(f'the anchoring factor error of the first frame after optimization: {first_factor.error(bundle.values)}')
+                print(
+                    f'the anchoring factor error of the first frame after optimization: {first_factor.error(bundle.values)}')
             error_after += bundle.get_error()
         print("error before: %f, error after: %f" % (error_before, error_after))
         print("all bundles are optimized")
@@ -362,7 +370,8 @@ class BundleAdjustment:
         for bundle in self.bundles:
             for i in range(bundle.start_kf_idx, bundle.end_kf_idx):
                 poses.append(bundle.transformed_values.atPose3(gtsam.symbol("c", i)))
-        poses.append(self.bundles[-1].transformed_values.atPose3(gtsam.symbol("c", self.bundles[-1].end_kf_idx)))
+        poses.append(self.bundles[-1].transformed_values.atPose3(
+            gtsam.symbol("c", self.bundles[-1].end_kf_idx)))
         return poses
 
     def get_all_landmarks_global(self):
@@ -473,16 +482,13 @@ def run_5_1():
         x_values.append((left_projection_errors[i] + right_projection_errors[i]) / 2)
     x_values = np.array(x_values)
     plt.plot(x_values, factor_errors, label='factor error')
-    plt.plot(x_values, (x_values ** 2)*0.5, label='1/2 reprojection error squared')
+    plt.plot(x_values, (x_values ** 2) * 0.5, label='1/2 reprojection error squared')
     plt.legend()
     plt.title('factor error as a function of the reprojection error')
     plt.xlabel('reprojection error')
     plt.ylabel('factor error')
     # save the plot
     plt.savefig(utils.EX5_DOCS_PATH + '5_1_factor_error_as_a_function_of_reprojection_error.png')
-
-
-
 
 
 def run_5_2_1():
@@ -548,16 +554,16 @@ def run_5_2_2():
     plt.clf()
     # plot the trajectory and landmarks as a view from above of the scene:
     utils.plot_trajectory_and_landmarks_from_above(list(bundle.get_all_cameras_pose3_gen()),
-                                             list(bundle.get_all_landmarks_point3_gen()))
+                                                   list(bundle.get_all_landmarks_point3_gen()))
 
 
 def run_5_3():
-    db_path = 'track_db_akaze_ratio=0.5_blur=10.pkl'
+    db_path = 'akaze_ratio=0.5_blur=10_removed_close'
     localization.run_4_2(db_path)
     track_db = TrackDB.deserialize(db_path)
-    first_location_prior_sigma = np.array([(5 * np.pi / 180) ** 2,
-                                           (1 * np.pi / 180) ** 2,
-                                           (1 * np.pi / 180) ** 2,
+    first_location_prior_sigma = np.array([(1 * np.pi / 180),
+                                           (1 * np.pi / 180),
+                                           (1 * np.pi / 180),
                                            1e-3,
                                            1e-3,
                                            1e-3])
@@ -577,11 +583,10 @@ def run_5_3():
     points = bundle_adjustment.get_all_landmarks_global()
     initial_poses = bundle_adjustment.get_all_camera_poses_global()
 
-
     utils.plot_trajectory_and_landmarks_from_above(optimized_poses, points,
-                                             cameras_initial_estimate=initial_poses,
-                                             plot_ground_truth=True,
-                                             file_name=f'5_3_all cameras_{db_path}.png')
+                                                   cameras_initial_estimate=initial_poses,
+                                                   plot_ground_truth=True,
+                                                   file_name=f'5_3_all cameras_{db_path}.png')
 
     # plot the localization error in mteres (euclidean distance) for each keyframe:
 
@@ -597,10 +602,11 @@ def run_5_3():
     plt.title(f'localization error in meters for each keyframe ({len(key_frames_list)} keyframes)')
     plt.xlabel('keyframe index')
     plt.ylabel('error [m]')
-    plt.savefig(utils.EX5_DOCS_PATH + f'5_3_keyframes_error_{db_path}.png', dpi=300)
+    plt.savefig(utils.EX6_DOCS_PATH + f'5_3_keyframes_error_{db_path}.png', dpi=300)
+
 
 if __name__ == '__main__':
     # run_5_2_1()
     # run_5_2_2()
-    # run_5_3()
-    localization.create_track_db("akaze_ratio=0.5_blur=10_removed_close")
+    run_5_3()
+    # localization.create_track_db("akaze_ratio=0.5_blur=10_removed_close")

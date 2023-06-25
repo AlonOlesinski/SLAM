@@ -428,3 +428,12 @@ def plot_trajectory_and_landmarks_from_above(cameras_optimized: list[gtsam.Pose3
 #       ex6         ##
 ######################
 
+if __name__== "__main__":
+
+
+    gt_left_extrinsics = get_gt_left_camera_matrices(2560)
+    gt_locations = [localization.camera_location_from_extrinsic_matrix(extrinsic_matrix) for
+                    extrinsic_matrix in gt_left_extrinsics]
+    camera_x = [location[0] for location in gt_locations]
+    camera_z = [location[2] for location in gt_locations]
+    # ax.scatter(camera_x, camera_z, c='black',s=0.5, label='ground truth')
