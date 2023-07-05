@@ -96,7 +96,7 @@ class PoseGraph:
 
             # search for closures:
             candidates = []
-            if i < self.min_gap: # TODO: try different gaps or a clever way to decide when to search for loop closures
+            if i < self.min_gap:
                 continue
 
             if i > stop_closure_at_kf:
@@ -104,7 +104,7 @@ class PoseGraph:
 
             # loop closure:
 
-            for j in range(i-self.min_gap): # TODO: try i - k from some k.
+            for j in range(i-self.min_gap):
                 relative_cov = self.closure_graph.get_sum_cov(j, i+1)
                 candidates.append((gtsam.symbol('c', j), cur_sym , relative_cov))
 
@@ -116,10 +116,10 @@ class PoseGraph:
             best_candidate = (None, None, None, None, None)
             best_candidate_inliers_percentage = 0
             candidates_num = min(5, len(candidate_indices))
-            for k in candidate_indices[:candidates_num]: # TODO: try different number of candidates
+            for k in candidate_indices[:candidates_num]:
                 frame1_idx = self.keyframe_frame_indices[k]
                 R_t, inliers_percentage, inliers_xl_xr_y_frame0, inliers_xl_xr_y_frame1 = consensus_matching(frame0_idx, frame1_idx)
-                if inliers_percentage > 0.8: # TODO: try different thresholds
+                if inliers_percentage > 0.8:
                     print('found loop closure between frame {} and {}'.format(frame1_idx, frame0_idx))
                     if inliers_percentage > best_candidate_inliers_percentage:
                         best_candidate = (k, frame1_idx, R_t, inliers_xl_xr_y_frame0, inliers_xl_xr_y_frame1)
@@ -138,7 +138,7 @@ class PoseGraph:
             loop_closure_bundle = bundle_adjustment.LoopClosureBundle(k,
                                                                       i+1,
                                                                       R_t,
-                                                                      first_location_prior, # TODO this might need to be changed for plots
+                                                                      first_location_prior,
                                                                       inliers_xl_xr_y_frame0,
                                                                       inliers_xl_xr_y_frame1)
             loop_closure_bundle.create_factor_graph()
@@ -218,12 +218,6 @@ class PoseGraph:
             information_mat_first_second = marginals.jointMarginalInformation(keys).at(keys[-1],
                                                                                        keys[-1])
             cond_cov_mat = np.linalg.inv(information_mat_first_second)
-            # pose = gtsam.BetweenFactorPose3(sym_0, sym_i, gtsam.Pose3(),
-            #                                 gtsam.noiseModel.Gaussian.Covariance(cond_cov_mat))
-            # temp_values = gtsam.Values()
-            # temp_values.insert(sym_i, values.atPose3(sym_i))
-            # temp_values.insert(sym_0, values.atPose3(sym_0))
-            # uncertainties.append(pose.error(temp_values))
             uncertainties.append(np.sqrt(np.linalg.det(cond_cov_mat)))
 
         return uncertainties
