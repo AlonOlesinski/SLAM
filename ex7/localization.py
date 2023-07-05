@@ -371,7 +371,7 @@ class Localizer:
             rot, _ = cv2.Rodrigues(rvec)
             return np.hstack((rot, tvec))
 
-    def calculate_supporters_and_deniers(self, R_t, threshold=1):
+    def calculate_supporters_and_deniers(self, R_t, threshold=1, return_indices = True):
         """
         calculate the supporters and deniers of the given R_t matrix.
         """
@@ -388,7 +388,14 @@ class Localizer:
         # convert the supporters and deniers to the original indices
         supporters = [list(self.matches_idx_dict.keys())[i] for i in supporters]
         deniers = [list(self.matches_idx_dict.keys())[i] for i in deniers]
-        return supporters, deniers
+        if return_indices:
+            return supporters, deniers
+        else:
+            return [(self.kp_left0[self.left0_right0_matches[self.matches_idx_dict[i][0]].queryIdx],
+                     self.kp_left1[self.left1_right1_matches[self.matches_idx_dict[i][1]].queryIdx]) for i in supporters], \
+                   [(self.kp_left0[self.left0_right0_matches[self.matches_idx_dict[i][0]].queryIdx],
+                     self.kp_left1[self.left1_right1_matches[self.matches_idx_dict[i][1]].queryIdx])
+                    for i in deniers]
 
     def get_l0l1_kps_from_match_idx(self, idx):
         """
@@ -484,11 +491,11 @@ class Localizer:
         plt.suptitle(title)
         plt.show()
 
-    def pnp_ransac(self, p=0.99999999):
+    def pnp_ransac(self, p=0.99999999, get_inliers=False, plot_flag = False):
 
         # return if there are less than 4 matches
-        if len(self.matches_idx_dict) < 30:
-            return None, 0.0
+        if len(self.matches_idx_dict) < 30 and get_inliers:
+            return None, 0.0 , None, None
 
         eps = (len(self.matches_idx_dict) - 4) / len(self.matches_idx_dict)
         n = int(np.log(1 - p) / np.log(1 - (1 - eps) ** 4))
@@ -511,11 +518,27 @@ class Localizer:
         #       f'and the number of inliesrs is {len(best_inliers) } ({np.round(len(best_inliers) / len(self.matches_idx_dict) * 100)}%)')
         # refine the best R_t
         best_R_t = self.calculate_pnp(best_inliers)
-        supporters, deniers = self.calculate_supporters_and_deniers(best_R_t)
+        supporters, deniers = self.calculate_supporters_and_deniers(best_R_t, return_indices=False)
+        if plot_flag:
+            utils.plot_supporters_and_deniers(self.left0_img, self.left1_img, supporters, deniers)
         if self.track_db:
             self.fill_track_db(supporters, best_R_t)
             self.track_db.inliers_outliers_count.append((len(best_inliers), len(deniers)))
         inliers_percent = np.round(len(best_inliers) / len(self.matches_idx_dict) * 100)
+        if get_inliers: # return the inliers (xl, xr, y) for every index in inliers
+            inliers_xl_xr_y_frame0 = []
+            inliers_xl_xr_y_frame1 = []
+            for idx in best_inliers:
+                left0_right0_match_idx, left1_right1_match_idx = self.matches_idx_dict[idx]
+                left0_right0_match = self.left0_right0_matches[left0_right0_match_idx]
+                left1_right1_match = self.left1_right1_matches[left1_right1_match_idx]
+                left0_kp = self.kp_left0[left0_right0_match.queryIdx]
+                right0_kp = self.kp_right0[left0_right0_match.trainIdx]
+                left1_kp = self.kp_left1[left1_right1_match.queryIdx]
+                right1_kp = self.kp_right1[left1_right1_match.trainIdx]
+                inliers_xl_xr_y_frame0.append((left0_kp.pt[0], right0_kp.pt[0], left0_kp.pt[1]))
+                inliers_xl_xr_y_frame1.append((left1_kp.pt[0], right1_kp.pt[0], left1_kp.pt[1]))
+            return best_R_t, inliers_percent, inliers_xl_xr_y_frame0, inliers_xl_xr_y_frame1
         return best_R_t, inliers_percent
 
     def get_frame_1_kp_desc_matches(self):

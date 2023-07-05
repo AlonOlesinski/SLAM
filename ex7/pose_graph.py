@@ -1,6 +1,8 @@
 from gtsam.utils import plot
 import matplotlib.pyplot as plt
+import tqdm
 
+import bundle_adjustment
 import localization
 from bundle_adjustment import *
 import numpy as np
@@ -12,20 +14,32 @@ class ClosureGraph:
     def __init__(self, c0: int):
         self.graph = dijkstar.Graph()
         self.graph.add_node(c0)
+        self.edge_dict = {}
 
     def add_node(self, c: int):
         self.graph.add_node(c)
 
-    def add_edge(self, c1: int, c2: int, weight: float):
+    def add_edge(self, c1: int, c2: int, weight: float, cov_matrix: np.ndarray):
         self.graph.add_edge(c1, c2, weight)
+        self.edge_dict[(c1, c2)] = cov_matrix
 
     def shortest_path(self, ci: int, cn: int):
         return dijkstar.find_path(self.graph, ci, cn)
 
+    def get_sum_cov(self, ci: int, cn: int):
+        shortest_path_info = self.shortest_path(ci, cn)
+        prev_node_idx = ci
+        sum_cov = np.zeros((6,6))
+        for i in range(1, len(shortest_path_info.nodes)):
+            cur_node_idx = shortest_path_info.nodes[i]
+            sum_cov += self.edge_dict[(prev_node_idx, cur_node_idx)]
+            prev_node_idx = cur_node_idx
+        return sum_cov
+
 
 class PoseGraph:
 
-    def __init__(self, relative_poses, covs, keyframe_indices):
+    def __init__(self, relative_poses, covs, keyframe_frame_indices, stop_closure_at_kf=420):
         self.relative_poses = relative_poses
         self.covs = covs
         self.graph = gtsam.NonlinearFactorGraph()
@@ -33,10 +47,20 @@ class PoseGraph:
         self.min_gap = 50
         self.closure_graph = None
         self.optimized_estimate = None
-        self.create_graph()
-        self.keyframe_indices = keyframe_indices
+        self.keyframe_frame_indices = keyframe_frame_indices
+        self.create_graph(stop_closure_at_kf)
+        self.uncertainties = []
 
-    def create_graph(self):
+    def create_graph(self, stop_closure_at_kf):
+        # prior for loop closure bundle:
+        loop_closure_counter = 0
+        plot_matches_flag = True
+        first_location_prior = np.array([(1 * np.pi / 180),
+                                         (1 * np.pi / 180),
+                                         (1 * np.pi / 180),
+                                         1e-3,
+                                         1e-3,
+                                         1e-3])
         # Create first camera symbol
         cur_global_pose = gtsam.Pose3() # 0,0,0
         prev_sym = gtsam.symbol('c', 0)
@@ -54,9 +78,7 @@ class PoseGraph:
         self.graph.add(factor)
         self.initial_estimate.insert(prev_sym, cur_global_pose)
 
-        print('the number of covs is: ', len(self.covs))
-        for i in range(len(self.relative_poses)):
-
+        for i in tqdm.tqdm(range(len(self.relative_poses))):
             cur_sym = gtsam.symbol('c', i + 1)
             # add initial estimate
             cur_global_pose = cur_global_pose * (self.relative_poses[i])
@@ -70,43 +92,85 @@ class PoseGraph:
 
             # add to closure graph
             self.closure_graph.add_node(i+1)
-            self.closure_graph.add_edge(i, i+1, np.sqrt(np.linalg.det(self.covs[i])))
+            self.closure_graph.add_edge(i, i+1, np.sqrt(np.linalg.det(self.covs[i])), self.covs[i])
 
             # search for closures:
             candidates = []
-
             if i < self.min_gap: # TODO: try different gaps or a clever way to decide when to search for loop closures
                 continue
 
+            if i > stop_closure_at_kf:
+                continue
+
+            # loop closure:
+
             for j in range(i-self.min_gap): # TODO: try i - k from some k.
-                shortest_path_info = self.closure_graph.shortest_path(j, i+1)
-                relative_cov = self.sum_of_covs(shortest_path_info.nodes)
-                candidates.append((cur_sym, gtsam.symbol('c', j), relative_cov))
+                relative_cov = self.closure_graph.get_sum_cov(j, i+1)
+                candidates.append((gtsam.symbol('c', j), cur_sym , relative_cov))
 
             candidate_indices = np.argsort([self.candidate_score(x) for x in candidates])
 
             # consensus matching for each candidate:
-            frame1_idx = i + 1
-            for k in candidate_indices[:2]: # TODO: try different number of candidates
-                frame0_idx = k
-                R_t, inliers_percentage = consensus_matching(frame0_idx, frame1_idx)
-                if inliers_percentage > 0.0:
-                    print('found inliers percentage: ', inliers_percentage, ' between keyframe {} and {}'.format(frame0_idx, frame1_idx))
-                if inliers_percentage > 0.7: # TODO: try different thresholds
-                    print('found loop closure between keyframe {} and {}'.format(frame0_idx, frame1_idx))
+            frame0_idx = self.keyframe_frame_indices[i + 1]
+
+            best_candidate = (None, None, None, None, None)
+            best_candidate_inliers_percentage = 0
+            candidates_num = min(5, len(candidate_indices))
+            for k in candidate_indices[:candidates_num]: # TODO: try different number of candidates
+                frame1_idx = self.keyframe_frame_indices[k]
+                R_t, inliers_percentage, inliers_xl_xr_y_frame0, inliers_xl_xr_y_frame1 = consensus_matching(frame0_idx, frame1_idx)
+                if inliers_percentage > 0.8: # TODO: try different thresholds
+                    print('found loop closure between frame {} and {}'.format(frame1_idx, frame0_idx))
+                    if inliers_percentage > best_candidate_inliers_percentage:
+                        best_candidate = (k, frame1_idx, R_t, inliers_xl_xr_y_frame0, inliers_xl_xr_y_frame1)
+                        best_candidate_inliers_percentage = inliers_percentage
+
+            if best_candidate_inliers_percentage == 0:
+                continue
 
 
+            # create local bundle for the two frames:
+            loop_closure_counter += 1
+            k, frame1_idx, R_t, inliers_xl_xr_y_frame0, inliers_xl_xr_y_frame1 = best_candidate
+            if plot_matches_flag:
+                consensus_matching(frame0_idx, frame1_idx, plot_flag=True)
+                plot_matches_flag = False
+            loop_closure_bundle = bundle_adjustment.LoopClosureBundle(k,
+                                                                      i+1,
+                                                                      R_t,
+                                                                      first_location_prior, # TODO this might need to be changed for plots
+                                                                      inliers_xl_xr_y_frame0,
+                                                                      inliers_xl_xr_y_frame1)
+            loop_closure_bundle.create_factor_graph()
+            # optimize the local bundle:
+            loop_closure_bundle.optimize()
+            R_t, cov = loop_closure_bundle.get_optimized_pose_and_cond_cov()
+            # add loop closure factor:
+            loop_closure_factor = gtsam.BetweenFactorPose3(
+                gtsam.symbol('c', i+1),
+                gtsam.symbol('c', k),
+                R_t,
+                gtsam.noiseModel.Gaussian.Covariance(cov))
 
+            self.graph.add(loop_closure_factor)
+            self.closure_graph.add_edge(k, i+1, np.sqrt(np.linalg.det(cov)), cov)
+
+            # optimize the (gtsam) graph:
+            self.optimize()
+
+        print('loop closure counter: ', loop_closure_counter)
 
     # add loop closure factor
     def candidate_score(self, candidate):
-        pose = gtsam.BetweenFactorPose3(candidate[0], candidate[1], gtsam.Pose3(),
-                                        gtsam.noiseModel.Gaussian.Covariance(candidate[2]))
+        sym_j = candidate[0]
+        sym_n = candidate[1]
+        cov = candidate[2]
+        pose = gtsam.BetweenFactorPose3(sym_j, sym_n, gtsam.Pose3(),
+                                        gtsam.noiseModel.Gaussian.Covariance(cov))
         values = gtsam.Values()
-        values.insert(candidate[0], self.initial_estimate.atPose3(candidate[0]))
-        values.insert(candidate[1], self.initial_estimate.atPose3(candidate[1]))
+        values.insert(sym_j, self.initial_estimate.atPose3(sym_j))
+        values.insert(sym_n, self.initial_estimate.atPose3(sym_n))
         return pose.error(values)
-
 
     def optimize(self):
         optimizer = gtsam.LevenbergMarquardtOptimizer(self.graph, self.initial_estimate)
@@ -132,23 +196,38 @@ class PoseGraph:
     def get_optimized_values(self):
         return self.optimized_estimate
 
+    def get_initial_values(self):
+        return self.initial_estimate
+
     def get_optimized_values_2d(self):
         values = gtsam.Values()
         for i in range(len(self.relative_poses) + 1):
             values.insert(gtsam.symbol('c', i), self.optimized_estimate.atPose3(gtsam.symbol('c', i)).translation())
         return values
 
-    def sum_of_covs(self, indices):
-        covs = []
-        prev_idx = indices[0]
-        for cur_idx in indices[1:]:
-            values = self.optimized_estimate
-            if values is None:
-                values = self.initial_estimate
-            _, cov = relative_poses_of_kfs(self.graph, values, prev_idx, cur_idx)
-            covs.append(cov)
-            prev_idx = cur_idx
-        return np.sum(covs, axis=0)
+    def get_uncertainties(self, values):
+        marginals = gtsam.Marginals(self.graph, values)
+        sym_0 = gtsam.symbol('c', 0)
+        uncertainties = []
+        for i in range(1, len(self.relative_poses) + 1):
+            sym_i = gtsam.symbol('c', i)
+            # calculate the covariance between the first and the current pose:
+            keys = gtsam.KeyVector()
+            keys.append(sym_0)
+            keys.append(sym_i)
+            information_mat_first_second = marginals.jointMarginalInformation(keys).at(keys[-1],
+                                                                                       keys[-1])
+            cond_cov_mat = np.linalg.inv(information_mat_first_second)
+            # pose = gtsam.BetweenFactorPose3(sym_0, sym_i, gtsam.Pose3(),
+            #                                 gtsam.noiseModel.Gaussian.Covariance(cond_cov_mat))
+            # temp_values = gtsam.Values()
+            # temp_values.insert(sym_i, values.atPose3(sym_i))
+            # temp_values.insert(sym_0, values.atPose3(sym_0))
+            # uncertainties.append(pose.error(temp_values))
+            uncertainties.append(np.sqrt(np.linalg.det(cond_cov_mat)))
+
+        return uncertainties
+
 
 
 def relative_poses_of_kfs_from_bundle(bundle, idx1, idx2):
@@ -171,21 +250,22 @@ def relative_poses_of_kfs(graph, values, idx1, idx2):
 
     return relative_pose, cond_cov_mat
 
-def consensus_matching(frame0_id, frame1_id):
+def consensus_matching(frame0_id, frame1_id, plot_flag = False):
     feature_detector = cv2.AKAZE_create()
     bf = cv2.BFMatcher(cv2.NORM_HAMMING)
     k, left0_extrinsic, right0_extrinsic = utils.read_cameras()
     left0_img, right0_img = utils.read_images(frame0_id)
     left1_img, right1_img = utils.read_images(frame1_id)
     blur_factor = 10
-    left0_img = cv2.blur(left0_img, (blur_factor, blur_factor))
-    right0_img = cv2.blur(right0_img, (blur_factor, blur_factor))
-    left1_img = cv2.blur(left1_img, (blur_factor, blur_factor))
-    right1_img = cv2.blur(right1_img, (blur_factor, blur_factor))
+    if not plot_flag:
+        left0_img = cv2.blur(left0_img, (blur_factor, blur_factor))
+        right0_img = cv2.blur(right0_img, (blur_factor, blur_factor))
+        left1_img = cv2.blur(left1_img, (blur_factor, blur_factor))
+        right1_img = cv2.blur(right1_img, (blur_factor, blur_factor))
     localizer = Localizer(frame0_id, feature_detector, bf, left0_img, right0_img, left1_img,
                           right1_img, left0_extrinsic, right0_extrinsic, k)
-    R_t, inliers_percent = localizer.pnp_ransac()
-    return R_t, inliers_percent
+    R_t, inliers_percent, inliers_xl_xr_y_frame0, inliers_xl_xr_y_frame1 = localizer.pnp_ransac(get_inliers=True, plot_flag=plot_flag)
+    return R_t, inliers_percent, inliers_xl_xr_y_frame0, inliers_xl_xr_y_frame1
 
 
 def run_6_1():
@@ -276,8 +356,167 @@ def run_7_1():
         keyframe_indices.append(bundle.end_kf_idx)
 
     pose_graph = PoseGraph(relative_poses, pose_graph_covs, keyframe_indices)
+    pose_graph.optimize()
+    optimized_poses = pose_graph.get_optimized_poses()
+    utils.plot_trajectory_and_landmarks_from_above(optimized_poses,[] , file_name='after_loop_closure.png')
+
+def run_7_5_3():
+    db_path = 'akaze_ratio=0.5_blur=10_removed_close'
+    track_db = TrackDB.deserialize(db_path)
+    first_location_prior_sigma = np.array([0.02,
+                                           0.002,
+                                           0.002,
+                                           1,
+                                           0.01,
+                                           1])
+    bundle_adjustment = BundleAdjustment(track_db, first_location_prior_sigma)
+    bundle_adjustment.set_bundles()
+    bundle_adjustment.run_local_adjustments()
+    bundle_adjustment.set_global_coordinates()
+
+    relative_poses = []
+    pose_graph_covs = []
+    keyframe_indices = [0]
+    for bundle in bundle_adjustment.bundles:
+        relative_pose, cov = relative_poses_of_kfs_from_bundle(bundle, bundle.start_kf_idx,
+                                                               bundle.end_kf_idx)
+        relative_poses.append(relative_pose)
+        pose_graph_covs.append(cov)
+        keyframe_indices.append(bundle.end_kf_idx)
+
+    pose_graph = PoseGraph(relative_poses, pose_graph_covs, keyframe_indices, stop_closure_at_kf=385)
+    pose_graph.optimize()
+    marginals = pose_graph.get_marginal_covariances()
+    optimized_values = pose_graph.get_optimized_values()
+    gtsam.utils.plot.plot_trajectory(0, optimized_values, marginals=marginals, scale=10)
+    gtsam.utils.plot.set_axes_equal(0)
+    plt.show()
+    plt.clf()
+
+def run_7_5_4():
+    db_path = 'akaze_ratio=0.5_blur=10_removed_close'
+    track_db = TrackDB.deserialize(db_path)
+    first_location_prior_sigma = np.array([0.02,
+                                           0.002,
+                                           0.002,
+                                           1,
+                                           0.01,
+                                           1])
+    bundle_adjustment = BundleAdjustment(track_db, first_location_prior_sigma)
+    bundle_adjustment.set_bundles()
+    bundle_adjustment.run_local_adjustments()
+    bundle_adjustment.set_global_coordinates()
+
+    relative_poses = []
+    pose_graph_covs = []
+    keyframe_indices = [0]
+    for bundle in bundle_adjustment.bundles:
+        relative_pose, cov = relative_poses_of_kfs_from_bundle(bundle, bundle.start_kf_idx,
+                                                               bundle.end_kf_idx)
+        relative_poses.append(relative_pose)
+        pose_graph_covs.append(cov)
+        keyframe_indices.append(bundle.end_kf_idx)
+
+    pose_graph = PoseGraph(relative_poses, pose_graph_covs, keyframe_indices)
+    initial_poses = pose_graph.get_initial_poses()
+    pose_graph.optimize()
+    optimized_poses = pose_graph.get_optimized_poses()
+    utils.plot_trajectory_and_landmarks_from_above(optimized_poses, [], initial_poses,
+                                                   file_name='before_and_after_loop_closure.png', plot_ground_truth=True
+                                                   , key_frames_to_frames=keyframe_indices)
+
+def run_7_5_5():
+    db_path = 'akaze_ratio=0.5_blur=10_removed_close'
+    track_db = TrackDB.deserialize(db_path)
+    first_location_prior_sigma = np.array([0.02,
+                                           0.002,
+                                           0.002,
+                                           1,
+                                           0.01,
+                                           1])
+    bundle_adjustment = BundleAdjustment(track_db, first_location_prior_sigma)
+    bundle_adjustment.set_bundles()
+    bundle_adjustment.run_local_adjustments()
+    bundle_adjustment.set_global_coordinates()
+
+    relative_poses = []
+    pose_graph_covs = []
+    keyframe_indices = [0]
+    for bundle in bundle_adjustment.bundles:
+        relative_pose, cov = relative_poses_of_kfs_from_bundle(bundle, bundle.start_kf_idx,
+                                                               bundle.end_kf_idx)
+        relative_poses.append(relative_pose)
+        pose_graph_covs.append(cov)
+        keyframe_indices.append(bundle.end_kf_idx)
+
+    pose_graph = PoseGraph(relative_poses, pose_graph_covs, keyframe_indices)
+    pose_graph.optimize()
+    gt_left_extrinsics = utils.get_gt_left_camera_matrices(keyframe_indices)
+    gt_locations = [localization.camera_location_from_extrinsic_matrix(extrinsic_matrix) for
+                    extrinsic_matrix in gt_left_extrinsics]
+    gt_locations = np.array(gt_locations)
+    optimized_poses = pose_graph.get_optimized_poses()
+    initial_poses = pose_graph.get_initial_poses()
+    optimized_locations = np.array([[pose.x(), pose.y(), pose.z()] for pose in optimized_poses])
+    initial_locations = np.array([[pose.x(), pose.y(), pose.z()] for pose in initial_poses])
+    optimized_errors = np.linalg.norm(np.array(optimized_locations) - gt_locations, axis=1)
+    initial_errors = np.linalg.norm(np.array(initial_locations) - gt_locations, axis=1)
+    key_frames_list = bundle_adjustment.get_key_frames_list()
+    plt.clf()
+    plt.plot(optimized_errors, label='optimized')
+    plt.plot(initial_errors, label='initial')
+    plt.title(f'localization error in meters for each keyframe ({len(key_frames_list)} keyframes)')
+    plt.xlabel('keyframe index')
+    plt.ylabel('error [m]')
+    plt.legend()
+    plt.savefig(utils.EX7_DOCS_PATH + f'keyframes_errors.png', dpi=300)
+
+def run_7_5_6():
+    db_path = 'akaze_ratio=0.5_blur=10_removed_close'
+    track_db = TrackDB.deserialize(db_path)
+    first_location_prior_sigma = np.array([0.02,
+                                           0.002,
+                                           0.002,
+                                           1,
+                                           0.01,
+                                           1])
+    bundle_adjustment = BundleAdjustment(track_db, first_location_prior_sigma)
+    bundle_adjustment.set_bundles()
+    bundle_adjustment.run_local_adjustments()
+    bundle_adjustment.set_global_coordinates()
+
+    relative_poses = []
+    pose_graph_covs = []
+    keyframe_indices = [0]
+    for bundle in bundle_adjustment.bundles:
+        relative_pose, cov = relative_poses_of_kfs_from_bundle(bundle, bundle.start_kf_idx,
+                                                               bundle.end_kf_idx)
+        relative_poses.append(relative_pose)
+        pose_graph_covs.append(cov)
+        keyframe_indices.append(bundle.end_kf_idx)
+
+    pose_graph = PoseGraph(relative_poses, pose_graph_covs, keyframe_indices, stop_closure_at_kf=420)
+    pose_graph.optimize()
+    optimized_uncertainties = pose_graph.get_uncertainties(pose_graph.get_optimized_values())
+    pose_graph = PoseGraph(relative_poses, pose_graph_covs, keyframe_indices,
+                           stop_closure_at_kf=0)
+    initial_uncertainties = pose_graph.get_uncertainties(pose_graph.get_initial_values())
+    plt.clf()
+    plt.plot(optimized_uncertainties, label='after')
+    plt.plot(initial_uncertainties, label='before')
+    plt.title('Uncertainties before/after loop closure')
+    plt.xlabel('keyframe index')
+    plt.ylabel('uncertainty')
+    # set the scale to logaritmic
+    plt.yscale('log')
+    plt.legend(loc='upper left')
+    plt.savefig(utils.EX7_DOCS_PATH + f'uncertainties.png', dpi=300)
+
 
 
 if __name__ == '__main__':
     # run_6_1()
-    run_7_1()
+    # run_7_5_3()
+    # run_7_5_4()
+    # run_7_5_5()
+    run_7_5_6()

@@ -15,12 +15,14 @@ if ON_LINUX:
     EX4_DOCS_PATH = '/mnt/c/Users/alono/OneDrive/desktop/studies/VAN_ex/docs/ex4/'
     EX5_DOCS_PATH = '/mnt/c/Users/alono/OneDrive/desktop/studies/VAN_ex/docs/ex5/'
     EX6_DOCS_PATH = '/mnt/c/Users/alono/OneDrive/desktop/studies/VAN_ex/docs/ex6/'
+    EX7_DOCS_PATH = '/mnt/c/Users/alono/OneDrive/desktop/studies/VAN_ex/docs/ex7/'
 else:
     EX4_DOCS_PATH = r'C:\Users\alono\OneDrive\desktop\studies\VAN_ex\docs\ex4'
     DATA_PATH = r'C:\Users\alono\OneDrive\desktop\studies\VAN_ex\dataset\sequences\05\\'
     GT_LEFT_CAMERA_PATH = r'C:\Users\alono\OneDrive\desktop\studies\VAN_ex\dataset\poses\05.txt'
     EX5_DOCS_PATH = r'C:\Users\alono\OneDrive\desktop\studies\VAN_ex\docs\ex5\\'
     EX6_DOCS_PATH = r'C:\Users\alono\OneDrive\desktop\studies\VAN_ex\docs\ex6\\'
+    EX7_DOCS_PATH = r'C:\Users\alono\OneDrive\desktop\studies\VAN_ex\docs\ex7\\'
 
 def read_images(idx):
     """
@@ -249,7 +251,9 @@ def get_gt_left_camera_matrices(lines_num):
     with open(GT_LEFT_CAMERA_PATH) as f:
         lines = f.readlines()
     res = []
-    for i in range(lines_num):
+    if type(lines_num) == int:
+        lines_num = [l for l in range(lines_num)]
+    for i in lines_num:
         camera_mat = np.array(lines[i].split(" "))[:-1].astype(float).reshape((3, 4))
         res.append(camera_mat)
     return res
@@ -283,7 +287,7 @@ def plot_supporters_and_deniers(left0, left1, supporters, deniers):
     axes[1].set_title('Left 1')
     # set the figure title to be the number of supporters and deniers and their colors
     fig.suptitle(f'# of supporters (red): {len(supporters)}, # of deniers (blue): {len(deniers)}')
-    plt.show()
+    plt.savefig(EX7_DOCS_PATH + '/supporters_deniers.png')
 
 
 ######################
@@ -386,7 +390,8 @@ def plot_trajectory_and_landmarks_from_above(cameras_optimized: list[gtsam.Pose3
                                              landmarks: list[gtsam.Point3],
                                              cameras_initial_estimate: list[gtsam.Pose3] = None,
                                              plot_ground_truth=False,
-                                             file_name='5_2_3_trajectory_and_landmarks_from_above.png'):
+                                             file_name='5_2_3_trajectory_and_landmarks_from_above.png',
+                                             key_frames_to_frames=None):
     fig = plt.figure()
     ax = fig.add_subplot()
     # make the x and y axes equal so that the plot is not distorted:
@@ -396,10 +401,10 @@ def plot_trajectory_and_landmarks_from_above(cameras_optimized: list[gtsam.Pose3
         landmark_x_z = [(landmark[0], landmark[2]) for landmark in landmarks]
         ax.scatter(*zip(*landmark_x_z), c='orange', s=0.1, label='landmark')
 
-    # if cameras_initial_estimate is not None:
-    #     camera_x = [camera.x() for camera in cameras_initial_estimate]
-    #     camera_z = [camera.z() for camera in cameras_initial_estimate]
-    #     ax.scatter(camera_x, camera_z, c='blue', s=0.5, label='initial estimate')
+    if cameras_initial_estimate is not None:
+        camera_x = [camera.x() for camera in cameras_initial_estimate]
+        camera_z = [camera.z() for camera in cameras_initial_estimate]
+        ax.scatter(camera_x, camera_z, c='blue', s=0.5, label='initial estimate')
 
     camera_x = [camera.x() for camera in cameras_optimized]
     camera_z = [camera.z() for camera in cameras_optimized]
@@ -407,12 +412,12 @@ def plot_trajectory_and_landmarks_from_above(cameras_optimized: list[gtsam.Pose3
 
     if plot_ground_truth:
         print(len(camera_x))
-        gt_left_extrinsics = get_gt_left_camera_matrices(len(camera_x))
+        gt_left_extrinsics = get_gt_left_camera_matrices(key_frames_to_frames)
         gt_locations = [localization.camera_location_from_extrinsic_matrix(extrinsic_matrix) for
                         extrinsic_matrix in gt_left_extrinsics]
         camera_x = [location[0] for location in gt_locations]
         camera_z = [location[2] for location in gt_locations]
-        ax.scatter(camera_x, camera_z, c='black',s=0.5, label='ground truth')
+        ax.scatter(camera_x, camera_z, c='green',s=0.5, label='ground truth')
 
 
 
@@ -420,7 +425,7 @@ def plot_trajectory_and_landmarks_from_above(cameras_optimized: list[gtsam.Pose3
     ax.set_ylabel('z')
     ax.set_title('trajectory from above')
     ax.legend()
-    plt.savefig(EX6_DOCS_PATH + file_name, dpi=300)
+    plt.savefig(EX7_DOCS_PATH + file_name, dpi=300)
     plt.clf()
 
 
