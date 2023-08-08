@@ -30,6 +30,12 @@ class TrackDB:
         """
         return self.global_R_t_list[frame_id]
 
+    def get_all_global_R_t(self):
+        """
+        :return: list of all global R_t
+        """
+        return self.global_R_t_list
+
     def get_frame_tracks(self, frame_id):
         """
         :param frame_id: frame id
