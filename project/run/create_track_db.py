@@ -5,7 +5,7 @@ import cv2
 from shared_utils import TRACK_DB_PATH, read_cameras, compose_affine_transformations, camera_location_from_extrinsic_matrix, get_gt_left_camera_matrices
 from consensus_matching_dir.consensus_matching_localization import consensus_matching
 from track_db_dir.track_db import TrackDB
-from matplotlib.pyplot import plt
+from matplotlib import pyplot as plt
 import numpy as np
 
 ITERATIONS = 2559
