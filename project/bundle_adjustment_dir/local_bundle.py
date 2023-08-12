@@ -166,7 +166,7 @@ class LocalBundle:
         """
         return self.test_measurement
 
-    def get_all_landmarks_point3_gen(self, with_sym=False, transformed=False):
+    def get_all_landmarks_point3_gen(self, with_sym=False, transformed=False, sample_rate=1):
         """
         return all the landmarks
         """
@@ -176,6 +176,9 @@ class LocalBundle:
             values = self.values
 
         for i in self.landmarks_idx:
+            # randomly sample the landmarks
+            if np.random.rand() > sample_rate:
+                continue
             if with_sym:
                 sym = gtsam.symbol("q", i)
                 yield sym, values.atPoint3(sym)
@@ -197,7 +200,7 @@ class LocalBundle:
             else:
                 yield values.atPose3(gtsam.symbol("c", i))
 
-    def get_all_syms_of_cameras_with_factor_to_landmark(self, landmark_sym, length):
+    def get_all_syms_of_cameras_with_factor_to_landmark(self, landmark_sym, length=0):
         """
         return all the camera poses that have factor to the given landmark.
         length is the minimal number of cameras that have factor to the landmark
@@ -214,20 +217,16 @@ class LocalBundle:
         else:
             return None, None
 
-    def reprojection_error_between_landmark_and_camera(self, camera_sym, landmark_sym):
+    def projection_error_between_landmark_and_camera(self, camera_sym, landmark_sym):
         """
-        return the reprojection error between the landmark and the camera
+        return the projection error between the landmark and the camera
         """
-        # get the camera pose
-        camera_pose = self.values.atPose3(camera_sym)
-        # get the landmark point
-        landmark_point = self.values.atPoint3(landmark_sym)
-        # get the camera
-        stereo_camera = gtsam.StereoCamera(camera_pose, self.k)
-        # project the landmark on the camera
-        projected_point = stereo_camera.project(landmark_point)
-        # get the measurement
-        measurement = self.graph.at(self.point_sym_cameras_sym_factor_dict[(landmark_sym, camera_sym)]).measured()
+        factor_idx = self.point_sym_cameras_sym_factor_dict[(landmark_sym, camera_sym)]
+        measurement = self.graph.at(factor_idx).measured()
+        point_3d = self.values.atPoint3(landmark_sym)
+        # project the point on the camera
+        projection_stereo_camera = gtsam.StereoCamera(self.values.atPose3(camera_sym), self.k)
+        projected_point = projection_stereo_camera.project(point_3d)
         # calculate the l2 error
         return np.linalg.norm(measurement.vector() - projected_point.vector())
 
@@ -242,3 +241,19 @@ class LocalBundle:
         return the error of the graph
         """
         return self.graph.error(self.values)
+
+    def get_projection_error_per_distance(self, landmark_sample_rate=1, min_distance=0):
+        dist_error_dict = {} # key: distance from the projection frame, value: list of errors
+        for land_mark_sym, _ in self.get_all_landmarks_point3_gen(with_sym=True,
+                                                                    sample_rate=landmark_sample_rate):
+            camera_syms, frames = self.get_all_syms_of_cameras_with_factor_to_landmark(
+                land_mark_sym, min_distance)
+            if frames is None:
+                continue
+            for i in range(len(frames)):
+                error = self.projection_error_between_landmark_and_camera(camera_syms[i], land_mark_sym)
+                distance = frames[i] - frames[0]
+                if distance not in dist_error_dict:
+                    dist_error_dict[distance] = []
+                dist_error_dict[distance].append(error)
+        return dist_error_dict

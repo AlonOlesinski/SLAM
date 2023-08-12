@@ -1,9 +1,9 @@
 import gtsam
 import tqdm
 import matplotlib.pyplot as plt
+import numpy as np
 
 from bundle_adjustment_dir.local_bundle import LocalBundle
-from shared_utils import gtsam_calib_mat
 
 
 class BundleAdjustment:
@@ -70,10 +70,10 @@ class BundleAdjustment:
         """
         error_before = 0
         error_after = 0
-        mean_error_per_bundle_before_opt = []
-        median_error_per_bundle_before_opt = []
-        mean_error_per_bundle_after_opt = []
-        median_error_per_bundle_after_opt = []
+        mean_factor_error_per_bundle_before_opt = []
+        median_projection_error_per_bundle_before_opt = []
+        mean_factor_error_per_bundle_after_opt = []
+        median_projection_error_per_bundle_after_opt = []
         for bundle in tqdm.tqdm(self.bundles, total=len(self.bundles)):
             error_before += bundle.get_error()
             # calculate error per factor before optimization:
@@ -81,8 +81,12 @@ class BundleAdjustment:
                 error_per_factor = []
                 for i in range(bundle.graph.size()):
                     error_per_factor.append(bundle.graph.at(i).error(bundle.values))
-                mean_error_per_bundle_before_opt.append(sum(error_per_factor) / len(error_per_factor))
-                median_error_per_bundle_before_opt.append(sorted(error_per_factor)[len(error_per_factor) // 2])
+                mean_factor_error_per_bundle_before_opt.append(sum(error_per_factor) / len(error_per_factor))
+                proj_hist = bundle.get_projection_error_per_distance(landmark_sample_rate=1) # dict of distance: list of errors
+                projection_errors = []
+                for distance, errors in proj_hist.items():
+                    projection_errors += errors
+                median_projection_error_per_bundle_before_opt.append(np.median(projection_errors))
 
             bundle.optimize()
 
@@ -91,8 +95,12 @@ class BundleAdjustment:
                 error_per_factor = []
                 for i in range(bundle.graph.size()):
                     error_per_factor.append(bundle.graph.at(i).error(bundle.values))
-                mean_error_per_bundle_after_opt.append(sum(error_per_factor) / len(error_per_factor))
-                median_error_per_bundle_after_opt.append(sorted(error_per_factor)[len(error_per_factor) // 2])
+                mean_factor_error_per_bundle_after_opt.append(sum(error_per_factor) / len(error_per_factor))
+                proj_hist = bundle.get_projection_error_per_distance(landmark_sample_rate=1) # dict of distance: list of errors
+                projection_errors = []
+                for distance, errors in proj_hist.items():
+                    projection_errors.extend(errors)
+                median_projection_error_per_bundle_after_opt.append(np.median(projection_errors))
 
             if bundle.end_kf_idx == self.track_db.get_number_of_frames() - 1 \
                     and print_final_bundle_properties:
@@ -106,8 +114,8 @@ class BundleAdjustment:
         print("all bundles are optimized")
 
         if return_error_per_bundle:
-            return mean_error_per_bundle_before_opt, median_error_per_bundle_before_opt, \
-                   mean_error_per_bundle_after_opt, median_error_per_bundle_after_opt
+            return mean_factor_error_per_bundle_before_opt, median_projection_error_per_bundle_before_opt, \
+                   mean_factor_error_per_bundle_after_opt, median_projection_error_per_bundle_after_opt
 
     def set_global_coordinates(self):
         """
@@ -174,29 +182,33 @@ class BundleAdjustment:
         plt.savefig(plot_path)
         plt.clf()
 
-    def get_reprojection_errors(self, min_distance=5):
+    def get_projection_errors_and_distances(self, min_distance=5, landmark_sample_rate=1.0):
         """
-        project all the landmarks from the last frame they were seen in the bundle to the previous
-        frames. calculate the reprojection error of each landmark in each frame and return a
+        calculate the projection error of each landmark in each frame and return a
         histogram of the errors (for both left and right cameras).
-        :param bundle_idx: index of the bundle
-        :return: reprojection error of the bundle
+        :param min_distance: the minimum number of frames that the landmark should be seen in.
+        :param landmark_sample_rate: a float in the range [0,1] - the rate of landmarks to sample.
+         for example, if it is 0.7, then 70% of the landmarks will be sampled.
+        :return: a dictionary of the errors. key: distance from the projection frame, value: list of errors
         """
         distance_error_dict = {} # key: distance from the projection frame, value: list of errors
         for bundle in self.bundles:
-            for land_mark_sym, _ in bundle.get_all_landmarks_point3_gen(with_sym=True):
-                camera_syms, frames = bundle.get_all_syms_of_cameras_with_factor_to_landmark(land_mark_sym, min_distance)
-                if frames is None:
-                    continue
-                for i in range(len(frames)):
-                    error = bundle.reprojection_error_between_landmark_and_camera(camera_syms[i],land_mark_sym)
-                    distance = frames[i] - frames[0]
-                    if distance not in distance_error_dict:
-                        distance_error_dict[distance] = []
-                    distance_error_dict[distance].append(error)
+            cur_dict = bundle.get_projection_error_per_distance(min_distance, landmark_sample_rate)
+            for distance, errors in cur_dict.items():
+                if distance not in distance_error_dict.keys():
+                    distance_error_dict[distance] = []
+                distance_error_dict[distance].extend(errors)
         return distance_error_dict
 
-    def get_factor_errors(self, min_distance=5):
+    def get_factor_errors(self, min_distance=5, reference_frame=0):
+        """
+        project all the landmarks from the last frame they were seen in the bundle to the previous
+        frames. calculate the factor error of each landmark in each frame and return a
+        histogram of the errors
+        :param min_distance: the minimum number of frames that the landmark should be seen in
+        :param reference_frame: should be 0 or -1, representing the first frame or the last frame.
+        :return: a dictionary of the errors. key: distance from the projection frame, value: list of errors
+        """
         distance_error_dict = {}  # key: distance from the projection frame, value: list of errors
         for bundle in self.bundles:
             for land_mark_sym, _ in bundle.get_all_landmarks_point3_gen(with_sym=True):
@@ -206,11 +218,16 @@ class BundleAdjustment:
                     continue
                 for i in range(len(frames)):
                     error = bundle.factor_error_between_landmark_and_camera(camera_syms[i], land_mark_sym)
-                    distance = frames[i] - frames[0]
+                    if reference_frame == 0:
+                        distance = frames[i] - frames[0]
+                    else: # reference frame is the last frame in the bundle
+                        distance = frames[-1] - frames[i]
                     if distance not in distance_error_dict:
                         distance_error_dict[distance] = []
                     distance_error_dict[distance].append(error)
         return distance_error_dict
+
+
 
 
 
