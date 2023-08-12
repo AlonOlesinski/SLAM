@@ -110,16 +110,15 @@ def gtsam_pose_from_global_R_t(R_t):
     return gtsam.Pose3(gtsam.Rot3(R_t_inv[:3, :3]), gtsam.Point3(R_t_inv[:3, 3]))
 
 
-def global_R_t_to_C0_R_t(R_t, R_t0):
+def global_R_ti_to_R_tj(R_ti, R_tj):
     """
-    Return a gtsam pose3 of R_t in the coordinates of R_t0
-    :param R_t: as returned by TrackDB.get_global_R_t (W -> Ci)
-    :param R_t0: inverse of the matrix returned by TrackDB.get_global_R_t (C0 -> W)
-    :return: gtsam pose3 (Ci -> C0)
+    Return the relative matrix between two cameras, given the global matrices of the two cameras.
+    :param R_ti: as returned by TrackDB.get_global_R_t (W -> Ci)
+    :param R_tj: as returned by TrackDB.get_global_R_t (W -> Ci)
+    :return: R_ij (Ci -> Cj)
     """
-    R_t = compose_affine_transformations(R_t, R_t0)  # C0 -> Ci
-    R_t = calculate_inverse_of_R_t(R_t)  # Ci -> C0
-    return R_t
+    R_ti_inv = calculate_inverse_of_R_t(R_ti)
+    return compose_affine_transformations(R_ti_inv, R_tj)
 
 
 def bundle_length_hist(bundle_lengths):
@@ -205,3 +204,41 @@ def plot_trajectory_from_above(trajectories: list[tuple[list, str]],
     ax.legend(loc='lower right')
     plt.savefig(file_name, dpi=300)
     plt.clf()
+
+def yield_sequence_length_of_gt_trajectory(sequence_size, video_len=2560):
+    """
+    compute the total length of the gt trajectory for each sequence of size sequence_size
+    :param sequence_size: size of the sequence (int)
+    :param video_len: length of the video (int)
+    :return: generator of the total length of the gt trajectory for each sequence of size sequence_size
+    """
+    gt_left_extrinsics = get_gt_left_camera_matrices(video_len)
+    gt_locations = [camera_location_from_extrinsic_matrix(extrinsic_matrix) for
+                    extrinsic_matrix in gt_left_extrinsics]
+    norms = [np.linalg.norm(gt_locations[i]-gt_locations[i+1]) for i in range(video_len-1)]
+    for j in range(0, video_len - sequence_size + 1):
+        yield np.sum(norms[j:j+sequence_size])
+
+def yield_sequence_length_of_gt_trajectory_by_kf(kf_frame_list, sequence_size_in_kfs, vidio_len=2560):
+    """
+    compute the total length of the gt trajectory for each sequence of size sequence_size (by keyframes).
+    :param kf_frame_list: list that maps between keyframes and frames
+    :param sequence_size_in_kfs: size of the sequence in number of keyframes (int)
+    :param video_len: length of the video (int)
+    :return: generator of the total length of the gt trajectory for each sequence of size sequence_size
+    """
+    gt_left_extrinsics = get_gt_left_camera_matrices(vidio_len)
+    gt_locations = [camera_location_from_extrinsic_matrix(extrinsic_matrix) for
+                    extrinsic_matrix in gt_left_extrinsics]
+    norms = [np.linalg.norm(gt_locations[i]-gt_locations[i+1]) for i in range(len(gt_locations)-1)]
+    for j in range(0, len(kf_frame_list) - sequence_size_in_kfs + 1):
+        yield sum(norms[kf_frame_list[j]:kf_frame_list[j + sequence_size_in_kfs-1]])
+
+
+
+
+
+
+if __name__ == "__main__":
+    for tot_len in yield_sequence_length_of_gt_trajectory(20, 500):
+        print(tot_len)

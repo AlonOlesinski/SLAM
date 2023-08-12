@@ -3,10 +3,11 @@ import numpy as np
 import tqdm
 import cv2
 
-from shared_utils import read_cameras, RESULTS_PATH
+from shared_utils import read_cameras, RESULTS_PATH, relative_poses_of_kfs_from_bundle
 from loop_closure_dir.closure_graph import ClosureGraph
 from consensus_matching_dir.consensus_matching_localization import consensus_matching
 from loop_closure_dir.loop_closure_bundle import LoopClosureBundle
+from bundle_adjustment_dir.bundle_adjustment import BundleAdjustment
 
 class PoseGraph:
 
@@ -20,6 +21,9 @@ class PoseGraph:
         self.optimized_estimate = None
         self.keyframe_frame_indices = keyframe_frame_indices
         self.plot_dir = RESULTS_PATH
+        self.inliers_percentage_of_lc = []
+        self.matches_num_of_lc = []
+        self.frames_of_lc = []
         self.create_graph(stop_closure_at_kf)
         self.uncertainties = []
 
@@ -96,18 +100,24 @@ class PoseGraph:
 
             best_candidate = (None, None, None, None, None)
             best_candidate_inliers_percentage = 0
+            best_candidate_frame1_idx = None
+            best_candidate_frame0_idx = None
             candidates_num = min(5, len(candidate_indices))
+            best_candidate_matches_num = 0
             for ci in candidate_indices[:candidates_num]:
                 frame1_idx = self.keyframe_frame_indices[ci]
-                R_t, inliers_percentage, inliers_xl_xr_y_frame0, inliers_xl_xr_y_frame1, _ =\
+                R_t, matches_num, inliers_percentage, inliers_xl_xr_y_frame0, inliers_xl_xr_y_frame1, _ =\
                     consensus_matching(detector=detector,matcher=bf, frame0_id=frame0_idx,
                                        frame1_id=frame1_idx,left0_extrinsic=left0_extrinsic,
                                        right0_extrinsic= right0_extrinsic,k=k, get_inliers=True)
-                if inliers_percentage > 0.8:
+                if inliers_percentage > 50:
                     print('found loop closure between frame {} and {}'.format(frame1_idx, frame0_idx))
                     if inliers_percentage > best_candidate_inliers_percentage:
                         best_candidate = (ci, frame1_idx, R_t, inliers_xl_xr_y_frame0, inliers_xl_xr_y_frame1)
                         best_candidate_inliers_percentage = inliers_percentage
+                        best_candidate_matches_num = matches_num
+                        best_candidate_frame1_idx = frame1_idx
+                        best_candidate_frame0_idx = frame0_idx
 
             if best_candidate_inliers_percentage == 0:
                 continue
@@ -115,6 +125,9 @@ class PoseGraph:
 
             # create local bundle for the two frames:
             loop_closure_counter += 1
+            self.inliers_percentage_of_lc.append(best_candidate_inliers_percentage)
+            self.matches_num_of_lc.append(best_candidate_matches_num)
+            self.frames_of_lc.append((best_candidate_frame0_idx, best_candidate_frame1_idx))
             ci, frame1_idx, R_t, inliers_xl_xr_y_frame0, inliers_xl_xr_y_frame1 = best_candidate
             if plot_matches_flag:
                 consensus_matching(detector=detector, matcher=bf, frame0_id=frame0_idx,
@@ -223,14 +236,15 @@ class PoseGraph:
 
     def get_uncertainties(self, values):
         """
-        calculate the uncertainties of the optimized poses as the square root of the determinant of
+        calculate the uncertainties of the poses as the square root of the determinant of
         the conditioned marginal covariance matrix from the first pose to the current pose.
         :param values: list of gtsam values
-        :return: list of uncertainties
+        :return: two lists of uncertainties, one for the location and the second for the orientation
         """
         marginals = gtsam.Marginals(self.graph, values)
         sym_0 = gtsam.symbol('c', 0)
-        uncertainties = []
+        location_uncertainties = []
+        orientation_uncertainties = []
         for i in range(1, len(self.relative_poses) + 1):
             sym_i = gtsam.symbol('c', i)
             # calculate the covariance between the first and the current pose:
@@ -240,6 +254,50 @@ class PoseGraph:
             information_mat_first_second = marginals.jointMarginalInformation(keys).at(keys[-1],
                                                                                        keys[-1])
             cond_cov_mat = np.linalg.inv(information_mat_first_second)
-            uncertainties.append(np.sqrt(np.linalg.det(cond_cov_mat)))
+            location_uncertainties.append(np.sqrt(np.linalg.det(cond_cov_mat[:3, :3])))
+            orientation_uncertainties.append(np.sqrt(np.linalg.det(cond_cov_mat[3:, 3:])))
 
-        return uncertainties
+
+        return location_uncertainties, orientation_uncertainties
+
+    def get_keyframe_frame_indices(self):
+        """
+        :return: the key frame indices
+        """
+        return self.keyframe_frame_indices
+
+    def get_lc_inliers_percent(self):
+        """
+        :return: the inliers percentage of successful loop closures
+        """
+        return self.inliers_percentage_of_lc
+
+    def get_lc_matches_num(self):
+        """
+        :return: the number of matches of successful loop closures
+        """
+        return self.matches_num_of_lc
+
+    def get_lc_frame_indices(self):
+        """
+        :return: the frame indices of successful loop closures
+        """
+        return self.frames_of_lc
+
+def create_pose_graph_from_ba(ba: BundleAdjustment, stop_closure_index = 420):
+    """
+    create a pose graph from a bundle adjustment object
+    :param ba:
+    :return:
+    """
+    relative_poses = []
+    pose_graph_covs = []
+    keyframe_indices = [0]
+    for bundle in ba.bundles:
+        relative_pose, cov = relative_poses_of_kfs_from_bundle(bundle, bundle.start_kf_idx,
+                                                               bundle.end_kf_idx)
+        relative_poses.append(relative_pose)
+        pose_graph_covs.append(cov)
+        keyframe_indices.append(bundle.end_kf_idx)
+
+    return PoseGraph(relative_poses, pose_graph_covs, keyframe_indices, stop_closure_index)

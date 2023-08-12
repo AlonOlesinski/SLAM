@@ -1,5 +1,6 @@
 import numpy as np
 import pickle
+import matplotlib.pyplot as plt
 
 from track_db_dir.track import Track
 from shared_utils import compose_affine_transformations, read_cameras
@@ -29,12 +30,6 @@ class TrackDB:
         :return: global R_t of the frame
         """
         return self.global_R_t_list[frame_id]
-
-    def get_all_global_R_t(self):
-        """
-        :return: list of all global R_t
-        """
-        return self.global_R_t_list
 
     def get_frame_tracks(self, frame_id):
         """
@@ -175,18 +170,16 @@ class TrackDB:
         Return the following statistics for:
         1. Number of tracks
         2. Number of frames
-        3. Mean track length, maximum track length, minimum track length
+        3. Mean track length
         4. Mean number of frame links (number of tracks on an average frame)
         :return:
         """
         all_tracks = self.get_all_unique_tracks()
         num_tracks = len(all_tracks)
         mean_track_length = np.mean([len(track.locations) for track in all_tracks])
-        max_track_length = np.max([len(track.locations) for track in all_tracks])
-        min_track_length = np.min([len(track.locations) for track in all_tracks])
         num_frames = len(self.frameId_track_dict.keys())
         mean_num_frame_links = np.mean([len(self.frameId_track_dict[k]) for k in self.frameId_track_dict.keys()])
-        return num_tracks, num_frames, mean_track_length, max_track_length, min_track_length, mean_num_frame_links
+        return num_tracks, num_frames, mean_track_length, mean_num_frame_links
 
     def get_longest_track(self):
         """
@@ -257,3 +250,37 @@ class TrackDB:
                                   k @ right_camera_extrinsic_matrix, (x_l, y_l), (x_r, y_r))
         point_3d = point_4d[:3] / point_4d[3]
         return point_3d
+
+    def plot_matches_per_frame(self, plot_path):
+        """
+        Plot the number of matches per frame
+        """
+        plt.clf()
+        matches_per_frame = []
+        for frame_id in self.frameId_track_dict.keys():
+            matches_per_frame.append(len(self.frameId_track_dict[frame_id]))
+        plt.plot(matches_per_frame)
+        plt.plot([np.mean(matches_per_frame)] * len(matches_per_frame))
+        plt.xlabel('Frame')
+        plt.ylabel('Number of matches')
+        plt.title('Number of matches per frame')
+        plt.savefig(plot_path)
+        plt.clf()
+
+    def plot_inliers_percentage_per_frame(self, plot_path):
+        """
+        Plot the inliers percentage per frame
+        """
+        plt.clf()
+        inliers_percentage_per_frame = []
+        for frame_id in list(self.frameId_track_dict.keys())[:-1]:
+            inliers_percentage_per_frame.append(self.inliers_outliers_count[frame_id][0] /
+                                                (self.inliers_outliers_count[frame_id][0] +
+                                                 self.inliers_outliers_count[frame_id][1]) * 100)
+        plt.plot(inliers_percentage_per_frame)
+        plt.plot([np.mean(inliers_percentage_per_frame)] * len(inliers_percentage_per_frame))
+        plt.xlabel('Frame')
+        plt.ylabel('Inliers percentage')
+        plt.title('Inliers percentage per frame')
+        plt.savefig(plot_path)
+        plt.clf()

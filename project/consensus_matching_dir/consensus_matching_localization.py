@@ -373,9 +373,8 @@ def consensus_matching(detector, matcher, frame0_id, frame1_id, left0_extrinsic,
 
     if get_inliers:
         R_t, inliers_percent, inliers_xl_xr_y_frame0, inliers_xl_xr_y_frame1 = pnp_result
-        return R_t, inliers_percent, inliers_xl_xr_y_frame0, inliers_xl_xr_y_frame1, \
+        return R_t, len(localizer.matches_idx_dict), inliers_percent, inliers_xl_xr_y_frame0, inliers_xl_xr_y_frame1, \
                next_prev_desc_and_matches
     else:
         R_t, inliers_percent = pnp_result
         return R_t, inliers_percent, next_prev_desc_and_matches
-
